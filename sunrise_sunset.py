@@ -6,65 +6,44 @@ import appdaemon.appapi as appapi
 import os
 import json
 import datetime
+import stat
+from utils import *
                        
 class sunrise_sunset(appapi.AppDaemon):
 
   def initialize(self):
     self.log("SunUp Sundown setup",level="INFO")
-    self.setup_mode()
     # initialize variables
     self.times={}
     self.times['morning']='05:00:00'
     self.times['nighttime']='22:00:00'
     self.times['timeout']='600'
+    self.log("times={}".format(self.times))
 
     # build list of entities subject to timeout
     self.timeout_list={}
     self.timeout_list=self.build_timeout_list("group.timeout_lights")
-    self.log("timeout_list final={}".format(self.timeout_list),level = "DEBUG")
+    self.log("timeout_list final={}".format(self.timeout_list),level = "INFO")
 
     # read actual times from config file and update HA with the saved values.
     self.filename=self.config["AppDaemon"]["app_dir"] + "/" + "sunrisesunset.cfg"
     self.load_times()
+    self.log("after load times={}".format(self.times))
     self.process_current_state()
 
     # Setup callbacks
-    self.listen_state(self.light_timeout_check, new="on", old="off")
+    self.listen_state(self.device_timeout_check, new="on", old="off")
+    self.listen_state(self.device_timeout_check, entity="cover", new="open", old="closed")
     self.listen_state(self.process_input_slider, entity="input_slider")
     self.run_at_sunset(self.begin_nighttime)
     self.run_at_sunrise(self.begin_morning)
-
-  def setup_mode(self):
-    self.maintMode=False
-    self.vacationMode=False
-    self.partyMode=False
-    self.maintMode=self.getOverrideMode("input_boolean.maint")
-    self.vacationMode=self.getOverrideMode("input_boolean.vacation")
-    self.partyMode=self.getOverrideMode("input_boolean.party")
-    self.log("Maint={} Vacation={} Party={}".format(self.maintMode,self.vacationMode,self.partyMode))
-
-  def getOverrideMode(self,ibool):
-    self.listen_state(self.set_mode, entity=ibool)
-    return(True if self.get_state(ibool)=='on' else False)
-
-  def set_mode(self,entity,attribute,old,new,kwargs):
-    if old!=new:
-      if entity=='input_boolean.maint':
-        self.maintMode=True if self.get_state(entity)=='on' else False
-      elif entity=='input_boolean.vacation':
-        self.vacationMode=True if self.get_state(entity)=='on' else False
-      elif entity=='input_boolean.party':
-        self.partyMode=True if self.get_state(entity)=='on' else False
-      else:
-        self.log("unknown entity {}".format(entity))
-    self.log("Maint={} Vacation={} Party={}".format(self.maintMode,self.vacationMode,self.partyMode))
 
   # this is called only on startup to check the current state of lights and adjust them according to the current time.
   def process_current_state(self):
     self.log("time to process current state of lights","INFO")
     if self.sun_down():
       # after sundown to turn on carriage lights if they are off.
-      self.log("after sundown state={}".format(self.get_state("switch.carriage_lights")),level="DEBUG")
+      self.log("after sundown state={}".format(self.get_state("switch.carriage_lights")),level="INFO")
       #handle carriage lights.  They aren't a timeout thing, but they do change at sunrise and sunset.
       if self.get_state("switch.carriage_lights")=='off':
         self.turn_on("switch.carriage_lights")
@@ -81,26 +60,27 @@ class sunrise_sunset(appapi.AppDaemon):
 
   # callback for sunset
   def begin_nighttime(self, kwargs):
-    self.log("Sunset",level="INFO")
+    self.log("Sunset","INFO")
     self.turn_on("switch.carriage_lights")
 
   # callback for morning
   def begin_morning(self, kwargs):
-    self.log("Sunrise",level="INFO")
+    self.log("Sunrise","INFO")
     self.turn_off("switch.carriage_lights")
 
   # given an entity if it is between start of nighttime and start of morning, and the current state is on schedule a timeout event
   def schedule_event(self,entity):
-    if self.now_is_between(self.times['nighttime'],self.times['morning']) and self.get_state(entity)=="on":
+    self.log("nighttime={} morning={} entity={}".format(self.times["nighttime"],self.times["morning"],entity))
+    if self.now_is_between(self.times['nighttime'],self.times['morning']) and get_house_state(self,"input_select.house_state")=="Normal":
       # set current time, time when the event was scheduled.
       self.timeout_list[entity]=self.time()
  
       # Schedule the event to run in "timeout" seconds (timeout was read from config file")
-      self.run_in(self.turn_light_off,self.times['timeout'],entity_id=entity)
+      self.run_in(self.turn_device_off,self.times['timeout'],entity_id=entity)
       self.log("scheduled to run in {} seconds for {} timeout_list={}".format(self.times['timeout'],entity,self.timeout_list),level="INFO")
 
   # someone turned something on
-  def light_timeout_check(self, entity, attribute, old, new, kwargs):
+  def device_timeout_check(self, entity, attribute, old, new, kwargs):
     # if the entity that turned on is in the timeout_list, try to schedule an event for it
     if entity in self.timeout_list:
       self.schedule_event(entity)
@@ -156,7 +136,7 @@ class sunrise_sunset(appapi.AppDaemon):
 
   # load times fromour configuration file
   def load_times(self):
-    self.log("checking on file {}".format(self.filename),level="DEBUG")
+    self.log("checking on file {}".format(self.filename),level="INFO")
     if os.path.exists(self.filename):
       # file exists so open and read it
       fout=open(self.filename,"rt")
@@ -182,14 +162,31 @@ class sunrise_sunset(appapi.AppDaemon):
     self.select_value("input_slider.timeout_value",self.times['timeout'])
 
   # after all that we finally are going to turn off the lights
-  def turn_light_off(self,kwargs):
+  def turn_device_off(self,kwargs):
     entity=kwargs["entity_id"]
-    self.log("{} timed out turning off".format(entity),level="INFO")
-    self.turn_off(entity)
-    priority="1"
-    speaktext = "Please remember to turn out the {}".format(entity)
-    lang = "en"
-    self.fire_event("SPEAK_EVENT",text=speaktext, priority=priority,language=lang)
+    self.log("turning off {}".format(entity))
+    dev, name= self.split_entity(entity)
+    if dev in ["light","switch"]:
+      if self.get_state(entity)=="on":
+        self.log("{} timed out turning off".format(entity))
+        self.turn_off(entity)
+        speaktext = "Please remember to turn out the {}".format(entity)
+      else:
+        self.log("Entity {} already off".format(entity))
+        speaktext = ""
+    else:
+      if self.get_state(entity)=="open":
+        self.log("{} timed out closing.".format(entity))
+        self.call_service("cover/close_cover",entity_id=entity)
+        speaktext = "Please remember to close the garage door when you come in"
+      else:
+        self.log("Entity {} already closed".format(entity))
+        speaktext=""
+    
+    if not speaktext=="":
+      priority="1"
+      lang = "en"
+      self.fire_event("SPEAK_EVENT",text=speaktext, priority=priority,language=lang)
 
 
   # loop through the group that was passed in as entity and return a dictionary of entities
@@ -202,5 +199,5 @@ class sunrise_sunset(appapi.AppDaemon):
         elist.update(self.build_timeout_list(object))
       else:
         elist[object]=self.time()
-      self.log("elist={}".format(elist),level="DEBUG")
+      self.log("elist={}".format(elist),level="INFO")
     return(elist)
