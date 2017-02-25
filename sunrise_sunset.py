@@ -2,14 +2,13 @@
 #              January 2017
 #
 
-import appdaemon.appapi as appapi
+import my_appapi as appapi
 import os
 import json
 import datetime
 import stat
-from utils import *
                        
-class sunrise_sunset(appapi.AppDaemon):
+class sunrise_sunset(appapi.my_appapi):
 
   def initialize(self):
     self.log("SunUp Sundown setup",level="INFO")
@@ -205,53 +204,6 @@ class sunrise_sunset(appapi.AppDaemon):
       self.log("elist={}".format(elist),level="INFO")
     return(elist)
 
-  ######################
-  #
-  # build_entity_list (self, ingroup, inlist - optional: defaults to all entity types))
-  #
-  # build a list of all of the entities in a group or nested hierarchy of groups
-  #
-  # ingroup = Starting group to cascade through
-  # inlist = a list of the entity types the list may contain.  Use this if you only want a list of lights and switches for example.
-  #            this would then exclude any input_booleans, input_sliders, media_players, sensors, etc. - defaults to all entity types.
-  #
-  # returns a python list containing all the entities found that match the device types in inlist.
-  ######################
-  def build_entity_list(self,ingroup,inlist=['all']):
-    retlist=[]
-    types=[]
-    typelist=[]
-
-    # validate values passed in
-    if not self.entity_exists(ingroup):
-      self.log("entity {} does not exist in home assistant".format(ingroup))
-      return None
-    if isinstance(inlist,list):
-      typelist=inlist
-    else:
-      self.log("inlist must be a list ['light','switch','media_player'] for example")
-      return None
-
-    # determine what types of HA entities to return
-    if "all" in typelist:
-      types=["all"]
-    else:
-      types= types + typelist
-      types.append("group")            # include group so that it doesn't ignore child groups
-
-    # check the device type to see if it is something we care about
-    devtyp, devname = self.split_entity(ingroup)
-    if (devtyp in types) or ("all" in types):                # do we have a valid HA entity type
-      if devtyp=="group":                                    # entity is a group so iterate through it recursing back into this function.
-        for entity in self.get_state(ingroup,attribute="all")["attributes"]["entity_id"]:
-          newitem=self.build_entity_list(entity,typelist)    # recurse through each member of the child group we are in.
-          if not newitem==None:                              # None means there was a problem with the value passed in, so don't include it in our output list
-            retlist.extend(newitem)                          # all is good so concatenate our lists together
-      else:
-        retlist.append(ingroup)                                      # actual entity so return it as part of a list so it can be concatenated
-    return retlist
-
-
   def setfilemode(self,infile,mode):
     if len(mode)<9:
       self.log("mode must bein the format of 'rwxrwxrwx'")
@@ -264,12 +216,4 @@ class sunrise_sunset(appapi.AppDaemon):
           result=result << 1
       self.log("Setting file to mode {} binary {}".format(mode,bin(result)))
       os.chmod(infile,result)
-
-  def log(self,msg,level="INFO"):
-    try:
-      obj,fname, line, func, context, index=inspect.getouterframes(inspect.currentframe())[1]
-    except IndexError:
-      self.log("Unknown - (xxx) {}".format(msg),level)
-    
-    super(sunrise_sunset,self).log("{} - ({}) {}".format(func,str(line),msg),level)
 
